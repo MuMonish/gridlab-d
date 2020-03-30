@@ -652,8 +652,10 @@ int waterheater::init(OBJECT *parent)
 		}
 
 		double tank_surface_area = 2*area + (tank_height*pi*tank_diameter);
-		U_val = tank_UA/tank_surface_area;
-		thermal_conductivity = 0.5918/1.728;
+		//U_val = tank_UA/tank_surface_area;
+		U_val = tank_UA/10.7639; // Converting UA To U_val diving by 1 ft2
+		//thermal_conductivity = 0.5918/1.728;
+		thermal_conductivity = 1.0407; // PDE Calibration
 		Tmax_lower = tank_setpoint_1 + (deadband_1/2.0);
 		Tmin_lower = tank_setpoint_1 - (deadband_1/2.0);
 		Tmax_upper = tank_setpoint_2 + (deadband_2/2.0);
@@ -666,13 +668,18 @@ int waterheater::init(OBJECT *parent)
 		else if (T_mixing_valve > Tmax_upper) {
 			gl_warning("waterheater::init() : Mixing valve temperature is set very high, it will not be very efficient. Try choosing a value less than upper element setpoint.");
 		}
-		number_of_mixing_zone_disks = 2;
-		total_mixing_zones = 2;
+		//number_of_mixing_zone_disks = 2;
+		//total_mixing_zones = 2;
+		number_of_mixing_zone_disks = 1; // One layer for heating  
+		total_mixing_zones = 2;		     // Two heating zones
+		number_of_sensing_zone_disks = 1;// One layer for sensing  MuMonish
+		total_sensing_zones = 2;		 // Two sensing zones      MuMonish
 		number_of_regular_disks = 2;
 		total_regular_zones = 2;
 		bottom_layer_disk = 1;
 		top_layer_disk = 1;
-		number_of_layers = (number_of_mixing_zone_disks*total_mixing_zones) + (number_of_regular_disks*total_regular_zones) + bottom_layer_disk + top_layer_disk;
+		//number_of_layers = (number_of_mixing_zone_disks*total_mixing_zones) + (number_of_regular_disks*total_regular_zones) + bottom_layer_disk + top_layer_disk;
+		number_of_layers = (number_of_mixing_zone_disks*total_mixing_zones) + (number_of_sensing_zone_disks*total_sensing_zones) + (number_of_regular_disks*total_regular_zones) + bottom_layer_disk + top_layer_disk;
 		number_of_states = 2 + number_of_layers;
 		number_of_inputs = 2;
 		number_of_outputs = 2;
@@ -686,7 +693,8 @@ int waterheater::init(OBJECT *parent)
 		a_loss_layer_coefficient = A_layer*U_val/(RHOWATER*Cp*V_layer);
 		a_loss_bottom_coefficient = ((A_layer + A_bottom)*U_val/(RHOWATER*Cp*V_layer));
 		a_loss_top_coefficient = ((A_bottom + A_top)*U_val/(RHOWATER*Cp*V_layer));
-		a_circular_const = (Vdot_circ*60.0)/(GALPCF*V_layer);
+		//a_circular_const = (Vdot_circ*60.0)/(GALPCF*V_layer);
+		a_circular_const = ((Vdot_circ*V_layer*0.05246*3600/(discrete_step_size*H_layer))/(V_layer)); // circular flow calibrated from PDE   MuMonish
 		b_matrix_coefficient = heating_element_capacity*BTUPHPKW/(RHOWATER*Cp*V_layer*number_of_mixing_zone_disks);
 		last_transition_time = 0;
 		for(int i=0; i<number_of_states; i++) {
@@ -717,11 +725,15 @@ int waterheater::init(OBJECT *parent)
 		A_loss[1][rows] = a_loss_bottom_coefficient;
 		A_loss[rows-1][rows-1] = -1.0*a_loss_top_coefficient;
 		A_loss[rows-1][rows] = a_loss_top_coefficient;
-		int start_index_1 = 1;
-		int end_index_1 = start_index_1 + number_of_mixing_zone_disks + number_of_regular_disks;
-		int start_index_2 = end_index_1 + 1;
-		int end_index_2 = start_index_2 + number_of_mixing_zone_disks + number_of_regular_disks;
-		for(int i=start_index_1+1; i<=start_index_1+number_of_mixing_zone_disks; i++) {
+		//int start_index_1 = 1;
+		int start_index_1 = 3;  // hard coding the lower HE    MuMonish
+		//int end_index_1 = start_index_1 + number_of_mixing_zone_disks + number_of_regular_disks;
+		int end_index_1 = 6;
+		int start_index_2 = end_index_1 + 1; // hard coding the upper HE     MuMonish
+		//int end_index_2 = start_index_2 + number_of_mixing_zone_disks + number_of_regular_disks;
+		int end_index_2 = number_of_layers;
+		//for(int i=start_index_1+1; i<=start_index_1+number_of_mixing_zone_disks-1; i++) {
+		for(int i=start_index_1; i<=start_index_1+number_of_mixing_zone_disks-1; i++) {
 			B_control[i][0] = b_matrix_coefficient;
 		}
 		for(int i=start_index_2; i<=start_index_2+number_of_mixing_zone_disks-1; i++) {
@@ -1769,26 +1781,54 @@ int waterheater::multilayer_time_to_transition() {
 		product1 = multiply_waterheater_matrices(A_matrix, T_now);
 		product2 = multiply_waterheater_matrices(B_control, control_temp);
 		dT_dt.clear();
-		for(int i=0; i<number_of_states; i++) {
+/* 		for(int i=0; i<number_of_states; i++) {
 			dT_dt.push_back(product1[i] + product2[i]);//should be deg F/hr
 			T_new[i] = (T_now[i] + (dT_dt[i]*(int)discrete_step_size/3600.0));
 			T_layers[i].push_back(T_new[i]);
+		} */
+		// Adding some boundary conditions   (MuMonish)
+		for(int i=0; i<number_of_states; i++) {
+			dT_dt.push_back(product1[i] + product2[i]);//should be deg F/hr
+			T_new[i] = (T_now[i] + (dT_dt[i]*(int)discrete_step_size/3600.0));
+			if(water_demand > 0.0 && i == 1) {
+				T_layers[i].push_back(Tinlet);		
+			} else if(i == 10) {
+				T_layers[i].push_back(T_new[i-1]);
+			} else{
+				T_layers[i].push_back(T_new[i]);
+			}
 		}
 		// control logic for upper layer
-		if(T_layers[10][time_new] >= Tmax_upper) {
+/* 		if(T_layers[10][time_new] >= Tmax_upper) {
 			control_upper.push_back(0.0);
 		} else if(T_layers[10][time_new] <= Tmin_upper) {
 			control_upper.push_back(1.0);
 		} else {
 			control_upper.push_back(control_upper[time_now]);
+		} */
+		// control logic for upper layer hard coded to the sensor layer (MuMonish)
+		if(T_layers[8][time_new] >= Tmax_upper) {
+		control_upper.push_back(0.0);
+		} else if(T_layers[8][time_new] <= Tmin_upper) {
+		control_upper.push_back(1.0);
+		} else {
+		control_upper.push_back(control_upper[time_now]);
 		}
 		// control logic for lower
-		if(T_layers[1][time_new] >= Tmax_lower || control_upper[time_new] == 1.0) {
+/* 		if(T_layers[1][time_new] >= Tmax_lower || control_upper[time_new] == 1.0) {
 			control_lower.push_back(0.0);
 		} else if(T_layers[1][time_new] <= Tmin_lower && control_upper[time_new] == 0.0) {
 			control_lower.push_back(1.0);
 		} else {
 			control_lower.push_back(control_lower[time_now]);
+		} */
+		// control logic for lower hard coded to the sensor layer  (MuMonish)
+		if(T_layers[4][time_new] >= Tmax_lower || control_upper[time_new] == 1.0) {
+			control_lower.push_back(0.0);
+		} else if(T_layers[4][time_new] <= Tmin_lower && control_upper[time_new] == 0.0) {
+			control_lower.push_back(1.0);
+		} else {
+			control_lower.push_back(control_upper[time_now]);
 		}
 		if(re_override == OV_ON) {
 			control_lower[time_new] = 0.0;
@@ -1829,16 +1869,19 @@ void waterheater::calculate_waterheater_matrices(int time_now) {
 
 	int i;
 	int rows = number_of_states - 1;
-	water_demand = water_demand*mixing_fraction;
-	double a_plug_coefficient = (water_demand*60.0)/(GALPCF*V_layer);
+	//water_demand = water_demand*mixing_fraction; // To avoid the 'State Changed' Flag (MuMonish)
+	double a_plug_coefficient = (water_demand*mixing_fraction*60.0)/(GALPCF*V_layer);
 	for(i=1; i<=rows-1; i++) {
 		A_plug[i][i-1] = a_plug_coefficient;
 		A_plug[i][i] = -1.0*a_plug_coefficient;
 	}
-	int start_index_1 = 1;
-	int end_index_1 = start_index_1 + number_of_mixing_zone_disks + number_of_regular_disks;
-	int start_index_2 = end_index_1 + 1;
-	int end_index_2 = start_index_2 + number_of_mixing_zone_disks + number_of_regular_disks;
+	//int start_index_1 = 1;
+	int start_index_1 = 3;  // hard coding from the lower HE (MuMonish)
+	//int end_index_1 = start_index_1 + number_of_mixing_zone_disks + number_of_regular_disks;
+	int end_index_1 = 6;
+	int start_index_2 = end_index_1 + 1; // hard coding the upper HE (MuMonish)
+	//int end_index_2 = start_index_2 + number_of_mixing_zone_disks + number_of_regular_disks;
+	int end_index_2 = number_of_layers;
 	for(i=start_index_1; i<=end_index_1; i++) {
 		A_circular_flow[i][i-1] = a_circular_const*control_lower[time_now];
 		A_circular_flow[i][i] = -2.0*a_circular_const*control_lower[time_now];
@@ -1889,17 +1932,33 @@ void waterheater::reinitialize_internals(int dt) {
 	Tmax_upper = tank_setpoint_2 + (deadband_2/2.0);
 	Tmin_upper = tank_setpoint_2 - (deadband_2/2.0);
 	// control logic for upper layer
-	if(T_layers[10][0] >= Tmax_upper) {
+/* 	if(T_layers[10][0] >= Tmax_upper) {
 		control_upper.push_back(0.0);
 	} else if(T_layers[10][0] <= Tmin_upper) {
 		control_upper.push_back(1.0);
 	} else {
 		control_upper.push_back(init_control_upper);
+	} */
+	// control logic for upper layer hard coded to the sensor layer (MuMonish)
+	if(T_layers[8][0] >= Tmax_upper) {
+		control_upper.push_back(0.0);
+	} else if(T_layers[8][0] <= Tmin_upper) {
+		control_upper.push_back(1.0);
+	} else {
+		control_upper.push_back(init_control_upper);
 	}
-	// control logic for lower
+/* 	// control logic for lower
 	if(T_layers[1][0] >= Tmax_lower || control_upper[0] == 1.0) {
 		control_lower.push_back(0.0);
 	} else if(T_layers[1][0] <= Tmin_lower && control_upper[0] == 0.0) {
+		control_lower.push_back(1.0);
+	} else {
+		control_lower.push_back(init_control_lower);
+	} */
+	// control logic for lower hard coded to the sensor layer (MuMonish)
+	if(T_layers[4][0] >= Tmax_lower || control_upper[0] == 1.0) {
+		control_lower.push_back(0.0);
+	} else if(T_layers[4][0] <= Tmin_lower && control_upper[0] == 0.0) {
 		control_lower.push_back(1.0);
 	} else {
 		control_lower.push_back(init_control_lower);

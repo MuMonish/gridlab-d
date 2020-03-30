@@ -328,6 +328,8 @@ public:
 private:
 	int number_of_mixing_zone_disks;
 	int total_mixing_zones;
+	int number_of_sensing_zone_disks;   // MuMonish
+	int total_sensing_zones; 			// MuMonish
 	int number_of_regular_disks;
 	int total_regular_zones;
 	int bottom_layer_disk;
